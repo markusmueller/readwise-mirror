@@ -21,6 +21,10 @@ export default tseslint.config(
       },
     },
   },
+  {
+    files: ['src/**/*.test.ts'],
+    languageOptions: { globals: { ...globals.jest } },
+  },
   // If obsidianmd targets JS/TS, its rules will now only apply to files not ignored above
   ...obsidianmd.configs.recommended,
   // Globally ignore EVERYTHING outside of src and standard build files

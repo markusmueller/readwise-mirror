@@ -1,5 +1,7 @@
 import type { PluginSettings } from 'types/settings';
 
+export const READWISE_API_BASE_URL = 'https://readwise.io/api/v2';
+
 export const DEFAULT_SETTINGS: PluginSettings = {
   atomicHighlights: false,
   atomicParentProperty: 'rw-parent',
@@ -7,6 +9,8 @@ export const DEFAULT_SETTINGS: PluginSettings = {
   atomicConditionalAtomize: false,
   baseFolderName: 'Readwise',
   apiToken: null,
+  apiBaseUrl: READWISE_API_BASE_URL,
+  apiTokenOptional: false,
   lastUpdated: null,
   autoSync: true,
   highlightSortOldestToNewest: true,

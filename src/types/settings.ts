@@ -1,6 +1,8 @@
 export interface PluginSettings {
   baseFolderName: string; // Base folder where synced notes will be stored
   apiToken: string | null; // Readwise API authentication token
+  apiBaseUrl: string; // Base URL of the Readwise API (v2)
+  apiTokenOptional: boolean; // Allow requests without a token; only honoured for a custom API URL
   lastUpdated: string | null; // Timestamp of last successful sync
   autoSync: boolean; // Whether to automatically sync on startup
   highlightSortOldestToNewest: boolean; // Sort highlights chronologically from oldest to newest

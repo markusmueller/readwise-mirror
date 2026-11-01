@@ -7,11 +7,18 @@ import {
   requestUrl,
   Setting,
   type TextComponent,
+  ToggleComponent,
 } from 'obsidian';
 import { Controller } from 'services/controller';
-import ReadwiseApi, { TokenValidationError } from 'services/readwise-api';
+import ReadwiseApi, {
+  isCleartextRemoteUrl,
+  isTokenOptional,
+  isValidApiBaseUrl,
+  normalizeApiBaseUrl,
+  TokenValidationError,
+} from 'services/readwise-api';
 import type { ReadwiseEnvironment } from 'services/readwise-environment';
-import { DEFAULT_SETTINGS } from 'src/constants';
+import { DEFAULT_SETTINGS, READWISE_API_BASE_URL } from 'src/constants';
 import type { PluginContext } from 'types/plugin-context';
 import type { TemplateValidationResult } from 'types/utilities';
 import { WarningDialog } from 'ui/dialog';
@@ -298,6 +305,9 @@ export default class ReadwiseMirrorSettingTab extends PluginSettingTab {
     new TabView(containerEl, tabs).render();
   }
 
+  // Serializes API URL applies with the token "Apply" button, whose click also blurs the URL input
+  private pendingEndpointApply: Promise<void> = Promise.resolve();
+
   /**
    * Updates the authentication buttons based on the current state.
    * @param state The current authentication state
@@ -324,6 +334,24 @@ export default class ReadwiseMirrorSettingTab extends PluginSettingTab {
         this.validationButton?.setDisabled(false).setCta().setButtonText('Apply');
         this.retrievalButton?.setDisabled(false).setButtonText('Authenticate with Readwise');
         break;
+    }
+  }
+
+  /** Re-checks the stored credentials against the configured API URL and updates the auth widgets. */
+  private async refreshAuthStatus(): Promise<boolean> {
+    this.updateAuthButtons('verifying');
+    this.setTokenValidationStatus('running');
+    try {
+      const valid = await Controller.validateAPIInstance();
+      if (valid) this.ctx.setStatusBarText('Readwise: Click to Sync');
+      this.updateAuthButtons(valid ? 'valid' : 'invalid');
+      this.setTokenValidationStatus(valid ? 'success' : 'invalid');
+      return valid;
+    } catch (error) {
+      this.updateAuthButtons('invalid');
+      const message = error instanceof TokenValidationError ? error.message : 'Token validation error';
+      this.setTokenValidationStatus('error', message);
+      return false;
     }
   }
 
@@ -421,24 +449,9 @@ export default class ReadwiseMirrorSettingTab extends PluginSettingTab {
           fragment.appendText(', or use the "Authenticate with Readwise" button for automatic retrieval of the token.');
           fragment.createEl('br');
           fragment.append(this.requireTokenValidationMessage());
-          this.updateAuthButtons('verifying');
-          this.setTokenValidationStatus('running');
-
-          void (async () => {
-            try {
-              hasValidToken = await Controller.validateAPIInstance();
-              if (hasValidToken) this.ctx.setStatusBarText('Readwise: Click to Sync');
-              this.updateAuthButtons(hasValidToken ? 'valid' : 'invalid');
-              this.setTokenValidationStatus(hasValidToken ? 'success' : 'invalid');
-            } catch (error) {
-              this.updateAuthButtons('invalid');
-              if (error instanceof TokenValidationError) {
-                this.setTokenValidationStatus('error', error.message);
-              } else {
-                this.setTokenValidationStatus('error', 'Token validation error');
-              }
-            }
-          })();
+          void this.refreshAuthStatus().then((valid) => {
+            hasValidToken = valid;
+          });
         })
       )
       .addButton((button) => {
@@ -467,8 +480,10 @@ export default class ReadwiseMirrorSettingTab extends PluginSettingTab {
               authModal.close();
               void (async () => {
                 const isAuthenticated = await this.getUserAuthToken();
-                this.updateAuthButtons(isAuthenticated ? 'valid' : 'invalid');
-                this.setTokenValidationStatus(isAuthenticated ? 'success' : 'invalid');
+                if (!isAuthenticated) {
+                  this.updateAuthButtons('invalid');
+                  this.setTokenValidationStatus('invalid');
+                }
               })();
             };
             authModal.open();
@@ -508,19 +523,25 @@ export default class ReadwiseMirrorSettingTab extends PluginSettingTab {
           .setIcon('check')
           .setButtonText(hasValidToken ? 'Verified' : 'Apply')
           .onClick(async () => {
+            await this.pendingEndpointApply;
             const value = this.tokenValue?.inputEl?.value ?? '';
             if (value === '') {
-              this.ctx.settings.apiToken = value;
-              this.updateAuthButtons('empty');
-              this.setTokenValidationStatus('empty');
+              this.ctx.settings.apiToken = null;
               await this.ctx.saveAndApplySettings();
-              this.ctx.notice('Cleared token. Add or retrieve token to sync.');
+              if (isTokenOptional(this.ctx.settings)) {
+                await this.refreshAuthStatus();
+                this.ctx.notice('Cleared token. Requests are sent without authentication.');
+              } else {
+                this.updateAuthButtons('empty');
+                this.setTokenValidationStatus('empty');
+                this.ctx.notice('Cleared token. Add or retrieve token to sync.');
+              }
             } else if (value !== this.ctx.settings.apiToken) {
               this.updateAuthButtons('verifying');
               this.setTokenValidationStatus('running');
 
               try {
-                const isValidToken = await ReadwiseApi.validateTokenValue(value);
+                const isValidToken = await ReadwiseApi.validateTokenValue(value, this.ctx.settings.apiBaseUrl);
 
                 if (isValidToken) {
                   this.ctx.settings.apiToken = value;
@@ -544,6 +565,124 @@ export default class ReadwiseMirrorSettingTab extends PluginSettingTab {
         this.validationButton.buttonEl.addClass('readwise-auth-validate-btn');
         return this.validationButton;
       });
+
+    this.renderApiEndpoint(containerEl);
+  }
+
+  private renderApiEndpoint(containerEl: HTMLElement): void {
+    let lastApplied = normalizeApiBaseUrl(this.ctx.settings.apiBaseUrl);
+    let urlInput: TextComponent | undefined;
+    let urlApplyButton: ButtonComponent | undefined;
+    let tokenOptionalToggle: ToggleComponent | undefined;
+    let tokenOptionalEl: HTMLElement | undefined;
+    const urlError = containerEl.createDiv({ cls: 'setting-item-description validation-notice' });
+
+    const applyEndpoint = async (raw: string): Promise<void> => {
+      if (raw.trim() !== '' && !isValidApiBaseUrl(raw)) {
+        urlError.setText(
+          `Invalid API URL, still using ${lastApplied}. Enter an http(s) URL without query or fragment.`
+        );
+        return;
+      }
+      urlError.setText('');
+      const normalized = normalizeApiBaseUrl(raw);
+      urlInput?.setValue(normalized);
+      if (normalized === lastApplied) return;
+
+      if (isCleartextRemoteUrl(normalized)) {
+        this.ctx.notice('API URL uses http: the Readwise token will be sent unencrypted.');
+      }
+
+      // Probe the new endpoint with the stored token before committing it, so an
+      // unreachable URL is reported as such and not as an invalid token.
+      const token = this.ctx.settings.apiToken ?? '';
+      const tokenOptional = isTokenOptional({
+        apiBaseUrl: normalized,
+        apiTokenOptional: this.ctx.settings.apiTokenOptional,
+      });
+      let status: 'success' | 'invalid' | 'error' | 'empty' = 'empty';
+      let errorMessage: string | undefined;
+      if (token || tokenOptional) {
+        this.setTokenValidationStatus('running');
+        try {
+          status = (await ReadwiseApi.validateTokenValue(token, normalized, tokenOptional)) ? 'success' : 'invalid';
+        } catch (error) {
+          status = 'error';
+          errorMessage = `API URL check failed: ${this.getErrorMessage(error)}`;
+        }
+      }
+
+      this.ctx.settings.apiBaseUrl = normalized;
+      lastApplied = normalized;
+      const isDefault = normalized === READWISE_API_BASE_URL;
+      if (isDefault && this.ctx.settings.apiTokenOptional) {
+        this.ctx.settings.apiTokenOptional = false;
+        tokenOptionalToggle?.setValue(false);
+      }
+      tokenOptionalEl?.toggle(!isDefault);
+      await this.ctx.saveAndApplySettings();
+
+      this.updateAuthButtons(status === 'success' ? 'valid' : status === 'empty' ? 'empty' : 'invalid');
+      this.setTokenValidationStatus(status, errorMessage);
+    };
+
+    const queueApply = (): Promise<void> => {
+      const raw = urlInput?.inputEl.value ?? '';
+      urlApplyButton?.setDisabled(true);
+      this.pendingEndpointApply = this.pendingEndpointApply
+        .then(() => applyEndpoint(raw))
+        .catch((error: unknown) => urlError.setText(`Failed to apply API URL: ${this.getErrorMessage(error)}`))
+        .finally(() => {
+          urlApplyButton?.setDisabled(false);
+        });
+      return this.pendingEndpointApply;
+    };
+
+    const setting = new Setting(containerEl)
+      .setName('API URL')
+      .setDesc(
+        createFragment((fragment) => {
+          fragment.appendText(
+            'Base URL for Readwise data requests. Only change this if you use a proxy or a compatible server. '
+          );
+          fragment.appendText(`Leave empty to use the default: ${READWISE_API_BASE_URL}. `);
+          fragment.appendText(
+            'For a custom URL, "No token required" sends requests without a token and clears the stored token; the default Readwise API always needs one.'
+          );
+          fragment.append(urlError);
+        })
+      )
+      .addText((text) => {
+        urlInput = text;
+        text.setPlaceholder(READWISE_API_BASE_URL).setValue(lastApplied);
+        text.inputEl.addClass('readwise-api-url-input');
+        text.inputEl.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') void queueApply();
+        });
+      })
+      .addButton((button) => {
+        urlApplyButton = button;
+        button.setCta().setIcon('check').setButtonText('Apply').onClick(queueApply);
+        button.buttonEl.addClass('readwise-auth-validate-btn');
+      });
+
+    tokenOptionalEl = setting.controlEl.createDiv({ cls: 'readwise-api-token-optional' });
+    tokenOptionalEl.createSpan({ cls: 'setting-item-description', text: 'No token required' });
+    tokenOptionalToggle = new ToggleComponent(tokenOptionalEl)
+      .setValue(this.ctx.settings.apiTokenOptional)
+      .setTooltip('Send requests without a token and clear the stored token')
+      .onChange(async (value) => {
+        if (value === this.ctx.settings.apiTokenOptional) return;
+        this.ctx.settings.apiTokenOptional = value;
+        if (value && this.ctx.settings.apiToken) {
+          this.ctx.settings.apiToken = null;
+          this.tokenValue?.setValue('');
+          this.ctx.notice('Cleared token. Requests are sent without authentication.');
+        }
+        await this.ctx.saveAndApplySettings();
+        await this.refreshAuthStatus();
+      });
+    tokenOptionalEl.toggle(lastApplied !== READWISE_API_BASE_URL);
   }
 
   private renderLibrarySettings(containerEl: HTMLElement): void {

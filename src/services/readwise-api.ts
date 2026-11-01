@@ -1,10 +1,64 @@
 import { type RequestUrlResponse, requestUrl } from 'obsidian';
 import type { Export, Library } from 'types/library';
+import type { PluginSettings } from 'types/settings';
+import { READWISE_API_BASE_URL } from '../constants';
 import type { PluginContext } from '../types/plugin-context';
 
-const API_ENDPOINT = 'https://readwise.io/api/v2';
 const API_PAGE_SIZE = 1000; // number of results per page, default 100 / max 1000
 const MAX_RATE_LIMIT_RETRIES = 5;
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * Canonical form of an API base URL: origin plus path, no trailing slash.
+ * Returns null unless the value starts with http:// or https://, has a host, and carries no query or fragment.
+ */
+export function canonicalizeApiBaseUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.hostname === '' || url.search !== '' || url.hash !== '') return null;
+  return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+}
+
+export function isValidApiBaseUrl(value: unknown): boolean {
+  return canonicalizeApiBaseUrl(value) !== null;
+}
+
+/**
+ * Base URL to use for requests: the canonical form of the value, or the default
+ * when the value is empty, not a string, or not a usable URL.
+ */
+export function normalizeApiBaseUrl(value: unknown): string {
+  return canonicalizeApiBaseUrl(value) ?? READWISE_API_BASE_URL;
+}
+
+/** True when the settings allow requests without a token: the opt-in is set and the API URL is not the default. */
+export function isTokenOptional(settings: Pick<PluginSettings, 'apiBaseUrl' | 'apiTokenOptional'>): boolean {
+  return settings.apiTokenOptional && normalizeApiBaseUrl(settings.apiBaseUrl) !== READWISE_API_BASE_URL;
+}
+
+function authHeaders(apiToken: string | null | undefined): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (apiToken) headers.Authorization = `Token ${apiToken}`;
+  return headers;
+}
+
+/** True when requests to this URL would send the token unencrypted to a non-local host. */
+export function isCleartextRemoteUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname);
+  } catch {
+    return false;
+  }
+}
 
 export class TokenValidationError extends Error {
   constructor(message: string) {
@@ -19,18 +73,15 @@ export class TokenValidationError extends Error {
 export default class ReadwiseApi {
   private validToken: boolean | undefined;
 
-  static async validateTokenValue(apiToken: string): Promise<boolean> {
-    if (!apiToken) {
+  static async validateTokenValue(apiToken: string, apiBaseUrl?: string, tokenOptional = false): Promise<boolean> {
+    if (!apiToken && !tokenOptional) {
       return false;
     }
 
     try {
       const response = await requestUrl({
-        url: `${API_ENDPOINT}/auth`,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Token ${apiToken}`,
-        },
+        url: `${normalizeApiBaseUrl(apiBaseUrl)}/auth`,
+        headers: authHeaders(apiToken),
       });
 
       return response.status === 204;
@@ -42,7 +93,7 @@ export default class ReadwiseApi {
   }
 
   private constructor(private ctx: PluginContext) {
-    if (!ctx.settings.apiToken) {
+    if (!ctx.settings.apiToken && !isTokenOptional(ctx.settings)) {
       throw new Error('API Token Required!');
     }
   }
@@ -64,17 +115,16 @@ export default class ReadwiseApi {
     );
   }
 
+  get apiBaseUrl(): string {
+    return normalizeApiBaseUrl(this.ctx.settings.apiBaseUrl);
+  }
+
   /**
    * Returns the options object for the Readwise API instance
    * @returns {Record<string, unknown>} - Returns an object containing the headers for the API request
    */
   get options() {
-    return {
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Token ${this.ctx.settings.apiToken}`,
-      },
-    };
+    return { headers: authHeaders(this.ctx.settings.apiToken) };
   }
 
   /**
@@ -94,7 +144,7 @@ export default class ReadwiseApi {
    */
   async validateToken(): Promise<boolean> {
     try {
-      const response = await requestUrl({ url: `${API_ENDPOINT}/auth`, ...this.options });
+      const response = await requestUrl({ url: `${this.apiBaseUrl}/auth`, ...this.options });
 
       this.validToken = response.status === 204;
       return this.validToken;
@@ -119,7 +169,7 @@ export default class ReadwiseApi {
     bookId?: number[],
     includeDeleted?: boolean
   ): Promise<Export[]> {
-    const url = `${API_ENDPOINT}/${contentType}?`;
+    const url = `${this.apiBaseUrl}/${contentType}?`;
     let data: Record<string, unknown> | undefined;
     let nextPageCursor: number | undefined;
     let rateLimitRetries = 0;

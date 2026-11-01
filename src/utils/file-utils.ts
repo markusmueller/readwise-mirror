@@ -1,9 +1,9 @@
 import slugify from '@sindresorhus/slugify';
 import filenamify from 'filenamify';
 import { normalizePath, type TFile, type TFolder } from 'obsidian';
-import { READWISE_REVIEW_URL_BASE } from 'src/constants';
 import type { PluginContext } from 'types/plugin-context';
 import type { PluginSettings } from 'types/settings';
+import { parseTrackedReadwiseId } from 'utils/tracking-utils';
 
 /**
  *  Normalizes the filename by replacing critical characters
@@ -56,5 +56,7 @@ export function getTrackingUrl(file: TFile, ctx: PluginContext): string | undefi
   const fileCache = ctx.app.metadataCache.getFileCache(file);
   const trackingProperty = ctx.settings.trackingProperty;
   const trackingUrl: unknown = fileCache?.frontmatter?.[trackingProperty];
-  return typeof trackingUrl === 'string' && trackingUrl.startsWith(READWISE_REVIEW_URL_BASE) ? trackingUrl : undefined;
+  return typeof trackingUrl === 'string' && parseTrackedReadwiseId(trackingUrl, ctx.settings) !== undefined
+    ? trackingUrl
+    : undefined;
 }

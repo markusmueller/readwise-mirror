@@ -82,6 +82,16 @@
   white-space: nowrap;
 }
 
+.readwise-api-url-input {
+  min-width: 20em;
+}
+
+.readwise-api-token-optional {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
 .readwise-modal-actions {
   display: flex;
   justify-content: flex-end;

@@ -1,11 +1,10 @@
 import { TFile, TFolder } from 'obsidian';
-import { READWISE_REVIEW_URL_BASE } from 'src/constants';
 import type { Library } from 'types/library';
 import type { TTrackedFile } from 'types/readwise-note';
 import { getTrackingUrl, isFileInFolder, normalizeFilename } from 'utils/file-utils';
 import { humanReadableFormat } from 'utils/format-utils';
 import { hasAtomizeBlocks } from 'utils/template-utils';
-import { isInReadwiseLibrary, isTrackedReadwiseNote } from 'utils/tracking-utils';
+import { isInReadwiseLibrary, isTrackedReadwiseNote, parseTrackedReadwiseId } from 'utils/tracking-utils';
 import type ReadwiseMirror from '../main';
 import type { PluginContext } from '../types/plugin-context';
 import ReadwiseApi from './readwise-api';
@@ -282,19 +281,11 @@ export class Controller {
     const isUpdatable = this.ctx.settings.trackAcrossVault ? isReadwiseNote : isReadwiseNote && isInLibrary;
 
     const trackingUrl = getTrackingUrl(file, this.ctx);
-    if (typeof trackingUrl !== 'string' || !trackingUrl.startsWith(READWISE_REVIEW_URL_BASE)) {
+    const readwiseId = parseTrackedReadwiseId(trackingUrl, this.ctx.settings);
+    if (trackingUrl === undefined || readwiseId === undefined) {
       this.ctx.logger.warn('Tracking URL missing/invalid for current note.');
       return null;
     }
-
-    const idStr = trackingUrl.replace(READWISE_REVIEW_URL_BASE, ''); // Extract the ID from the URL
-
-    if (!/^\d+$/.test(idStr)) {
-      this.ctx.logger.warn(`Tracking URL in note is invalid (ID ${idStr} is not a valid number).`);
-      return null;
-    }
-
-    const readwiseId = Number(idStr);
 
     // Construct tracked note
     const trackedFile: TTrackedFile = {

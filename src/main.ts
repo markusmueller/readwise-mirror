@@ -8,6 +8,7 @@ import { DeduplicatingVaultWriter } from 'services/deduplicating-vault-writer';
 import { Frontmatter } from 'services/frontmatter';
 import { FrontmatterManager } from 'services/frontmatter-manager';
 import Logger from 'services/logger';
+import { isTokenOptional } from 'services/readwise-api';
 import { buildReadwiseDocument } from 'services/readwise-document-mapper';
 import { ReadwiseEnvironment, ReadwiseLoader } from 'services/readwise-environment';
 import { filterHighlights, renderMarkdownTemplate } from 'services/template-rendering';
@@ -111,7 +112,7 @@ export default class ReadwiseMirror extends Plugin {
       this._frontmatterManager = new FrontmatterManager(this.ctx, this.env, this.app.fileManager);
       this._deduplicatingVaultWriter = new DeduplicatingVaultWriter(this.ctx, this.frontmatterManager);
 
-      if (!this.settings.apiToken) {
+      if (!this.settings.apiToken && !isTokenOptional(this.settings)) {
         this.notify.notice('Readwise: API Token not detected\nPlease enter in configuration page');
         this.notify.setStatusBarText('Readwise: API Token Required');
       } else {

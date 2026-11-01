@@ -40,6 +40,7 @@ General settings of the plugin:
 
 - **Debug mode**: Will generate lots of debug messages, usually not needed.
 - **Authentication**: The plugin provides OAuth-based authentication with Readwise. After installing, visit the plugin settings and use the "Authenticate with Readwise" button to set up the connection.
+- **API URL**: Base URL for Readwise data requests (defaults to `https://readwise.io/api/v2`). Only change this if you route requests through a proxy or a compatible server. Changes take effect when you click Apply; leave the field empty and apply to return to the default. A plain `http://` URL sends your token unencrypted. With a custom URL, a **No token required** toggle appears next to the field for servers that do not check authentication: switching it on clears the stored token, and returning to the default URL switches it off again.
 - **Library folder name**: Specify the folder where the Readwise library will be stored (defaults to `Readwise`).
 - **Filter by tags**: Filter Readwise items by tag.
 - **Auto sync on startup**: Automatically sync new highlights when Obsidian starts.
